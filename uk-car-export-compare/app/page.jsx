@@ -24,39 +24,45 @@ import {
 const countries = {
   Botswana: {
     port: "Walvis Bay / Durban route",
-    shipping: 1350,
-    dutyRate: 0.27,
+    shipping: 1100,
+    dutyRate: 0.42,
     notes: "Popular for Toyota Hilux, Ranger, Prado, Fortuner and Land Cruiser imports.",
   },
   Nigeria: {
     port: "Lagos / Apapa route",
-    shipping: 1450,
-    dutyRate: 0.35,
+    shipping: 850,
+    dutyRate: 0.75,
     notes: "High demand for Toyota, Lexus, Mercedes, Honda and commercial vehicles.",
   },
   Zimbabwe: {
     port: "Durban / Beira route",
-    shipping: 1550,
-    dutyRate: 0.32,
+    shipping: 1830,
+    dutyRate: 0.85,
     notes: "Strong demand for Hilux, SUVs, vans and reliable Japanese vehicles.",
   },
   Ghana: {
     port: "Tema route",
-    shipping: 1400,
-    dutyRate: 0.30,
+    shipping: 600,
+    dutyRate: 0.40,
     notes: "Good market for Toyota, Hyundai, Kia, Mercedes and family SUVs.",
   },
   Kenya: {
     port: "Mombasa route",
-    shipping: 1500,
-    dutyRate: 0.34,
+    shipping: 1195,
+    dutyRate: 0.80,
     notes: "Age limits and compliance checks matter. Great for Japanese and UK stock.",
   },
   Zambia: {
     port: "Durban / Walvis Bay route",
-    shipping: 1600,
-    dutyRate: 0.31,
+    shipping: 2145,
+    dutyRate: 0.55,
     notes: "Demand for pickups, family SUVs, Toyota, Ford and Isuzu models.",
+  },
+  Lesotho: {
+    port: "Durban route, then overland to Maseru",
+    shipping: 1500,
+    dutyRate: 0.44,
+    notes: "Usually routed via South Africa. Duty, VAT and clearing should be confirmed before purchase.",
   },
 };
 
@@ -250,11 +256,11 @@ export default function UKCarExportCompare() {
                     <strong>{formatGBP(estimate.value)}</strong>
                   </div>
                   <div className="flex items-center justify-between border-b border-white/10 py-4">
-                    <span className="text-slate-400">Estimated shipping</span>
+                    <span className="text-slate-400">Estimated RoRo shipping from</span>
                     <strong>{formatGBP(estimate.shipping)}</strong>
                   </div>
                   <div className="flex items-center justify-between border-b border-white/10 py-4">
-                    <span className="text-slate-400">Duty/tax placeholder</span>
+                    <span className="text-slate-400">Estimated import tax/duty</span>
                     <strong>{formatGBP(estimate.duty)}</strong>
                   </div>
                   <div className="flex items-center justify-between border-b border-white/10 py-4">
@@ -268,7 +274,7 @@ export default function UKCarExportCompare() {
                 </div>
 
                 <p className="mt-5 text-sm leading-6 text-slate-400">
-                  Estimates are placeholders for lead capture. Final duty, tax, compliance and shipping must be confirmed by licensed partners.
+                  Estimates are rough lead-capture guides only. Shipping varies by vehicle size, port, sailing date and RoRo/container method. Final duty, VAT, levies, compliance and clearing costs must be confirmed by a licensed clearing or shipping partner.
                 </p>
               </div>
             </motion.div>
