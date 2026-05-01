@@ -1,6 +1,4 @@
-"use client";
-
-import React, { useMemo, useState } from "react";
+import React, { useEffect, useMemo, useState } from "react";
 import { motion } from "framer-motion";
 import {
   Calculator,
@@ -105,6 +103,13 @@ function formatGBP(value) {
 }
 
 export default function UKCarExportCompare() {
+  useEffect(() => {
+    if (typeof window !== "undefined") {
+      window.history.scrollRestoration = "manual";
+      window.scrollTo({ top: 0, left: 0, behavior: "instant" });
+    }
+  }, []);
+
   const [country, setCountry] = useState("Botswana");
   const [vehicleValue, setVehicleValue] = useState(12000);
   const [inspection, setInspection] = useState(true);
@@ -484,7 +489,7 @@ export default function UKCarExportCompare() {
                   <MessageCircle className="h-5 w-5" /> WhatsApp quote
                 </a>
                 <a
-                  href={`mailto:viddchoudhary@hotmail.com?subject=UK car export quote request&body=${whatsappText}`}
+                  href={`mailto:quotes@uk-car-export-compare.vercel.app?subject=UK car export quote request&body=${whatsappText}`}
                   className="inline-flex items-center justify-center gap-2 rounded-2xl bg-white px-5 py-4 font-black text-slate-950 transition hover:bg-slate-200"
                 >
                   <Mail className="h-5 w-5" /> Email quote
@@ -537,7 +542,7 @@ export default function UKCarExportCompare() {
           </div>
           <div className="flex flex-wrap gap-4 text-sm text-slate-400">
             <a className="flex items-center gap-2 hover:text-white" href="tel:+447943617386"><Phone className="h-4 w-4" /> 07943 617386</a>
-            <a className="flex items-center gap-2 hover:text-white" href="mailto:viddchoudhary@hotmail.com"><Mail className="h-4 w-4" /> viddchoudhary@hotmail.com</a>
+            <a className="flex items-center gap-2 hover:text-white" href="mailto:quotes@uk-car-export-compare.vercel.app"><Mail className="h-4 w-4" /> quotes@uk-car-export-compare.vercel.app</a>
           </div>
         </div>
       </footer>
