@@ -2,8 +2,10 @@
 
 import React, { useEffect, useMemo, useRef, useState } from "react";
 
-const STORAGE_KEY = "wm_cleaner_jobs_v3";
-const CLEANERS_KEY = "wm_cleaner_partners_v3";
+const STORAGE_KEY = "wm_cleaner_jobs_v4";
+const CLEANERS_KEY = "wm_cleaner_partners_v4";
+const NL = String.fromCharCode(10);
+const CR = String.fromCharCode(13);
 
 const serviceTypes = [
   "Regular Weekly Clean",
@@ -47,7 +49,6 @@ const areas = [
 ];
 
 const paymentMethods = ["Bank Transfer", "Stripe", "PayPal", "Cash", "Other"];
-
 const outcomes = ["Pending", "Booked", "Completed", "Lost", "Refunded", "Replaced"];
 
 const defaultJob = {
@@ -111,6 +112,10 @@ function money(value) {
   return Number.isFinite(number) ? number : 0;
 }
 
+function csvCell(value) {
+  return `"${String(value ?? "").replaceAll('"', '""')}"`;
+}
+
 function copyToClipboard(text) {
   navigator.clipboard.writeText(text);
   alert("Copied to clipboard");
@@ -134,6 +139,73 @@ function cleanerCanReceiveLeads(cleaner) {
   );
 }
 
+function parseCsv(text) {
+  const rows = [];
+  let row = [];
+  let cell = "";
+  let insideQuotes = false;
+
+  for (let i = 0; i < text.length; i += 1) {
+    const char = text[i];
+    const nextChar = text[i + 1];
+
+    if (char === '"' && insideQuotes && nextChar === '"') {
+      cell += '"';
+      i += 1;
+    } else if (char === '"') {
+      insideQuotes = !insideQuotes;
+    } else if (char === "," && !insideQuotes) {
+      row.push(cell);
+      cell = "";
+    } else if ((char === NL || char === CR) && !insideQuotes) {
+      if (char === CR && nextChar === NL) i += 1;
+      row.push(cell);
+      if (row.some((value) => value !== "")) rows.push(row);
+      row = [];
+      cell = "";
+    } else {
+      cell += char;
+    }
+  }
+
+  row.push(cell);
+  if (row.some((value) => value !== "")) rows.push(row);
+
+  return rows;
+}
+
+function rowsToObjects(rowsToConvert, defaultShape) {
+  if (rowsToConvert.length < 1) return [];
+
+  const headers = rowsToConvert[0].map((header) => header.trim());
+
+  return rowsToConvert
+    .slice(1)
+    .filter((row) => row.some((cell) => cell !== ""))
+    .map((row) => {
+      const item = { ...defaultShape };
+
+      headers.forEach((header, index) => {
+        if (!(header in item)) return;
+
+        const value = row[index] ?? "";
+
+        if (typeof item[header] === "boolean") {
+          item[header] =
+            value === "true" ||
+            value === "TRUE" ||
+            value === "Yes" ||
+            value === "yes";
+        } else {
+          item[header] = value;
+        }
+      });
+
+      if (!item.id) item.id = makeId("IMPORTED");
+      return item;
+    });
+}
+
 export default function CleanerLeadTrackerPage() {
   const [jobs, setJobs] = useState([]);
   const [cleaners, setCleaners] = useState([]);
@@ -143,9 +215,7 @@ export default function CleanerLeadTrackerPage() {
   const [cleanerFormOpen, setCleanerFormOpen] = useState(false);
   const [editingJob, setEditingJob] = useState(null);
   const [editingCleaner, setEditingCleaner] = useState(null);
-  const importJobsInputRef = useRef(null);
-  const importCleanersInputRef = useRef(null);
-  const importAllInputRef = useRef(null);
+  const importFullInputRef = useRef(null);
 
   useEffect(() => {
     try {
@@ -167,23 +237,27 @@ export default function CleanerLeadTrackerPage() {
     localStorage.setItem(CLEANERS_KEY, JSON.stringify(cleaners));
   }, [cleaners]);
 
+  const approvedCleaners = useMemo(
+    () => cleaners.filter((cleaner) => cleanerCanReceiveLeads(cleaner)),
+    [cleaners]
+  );
+
   const stats = useMemo(() => {
     const totalLeads = jobs.length;
     const paidLeads = jobs.filter((job) => job.cleanerPaid).length;
     const releasedLeads = jobs.filter((job) => job.detailsReleased).length;
     const lockedLeads = jobs.filter((job) => !job.cleanerPaid).length;
     const revenue = jobs.reduce((sum, job) => sum + money(job.paymentAmountReceived), 0);
-    const approvedCleaners = cleaners.filter((cleaner) => cleanerCanReceiveLeads(cleaner)).length;
 
     return {
       totalLeads,
       paidLeads,
       releasedLeads,
       lockedLeads,
+      approvedCleaners: approvedCleaners.length,
       revenue,
-      approvedCleaners,
     };
-  }, [jobs, cleaners]);
+  }, [jobs, approvedCleaners]);
 
   const filteredJobs = useMemo(() => {
     const q = search.toLowerCase();
@@ -240,11 +314,9 @@ export default function CleanerLeadTrackerPage() {
 
     setJobs((current) => {
       const exists = current.some((item) => item.id === updatedJob.id);
-
       if (exists) {
         return current.map((item) => (item.id === updatedJob.id ? updatedJob : item));
       }
-
       return [updatedJob, ...current];
     });
 
@@ -253,9 +325,7 @@ export default function CleanerLeadTrackerPage() {
   }
 
   function deleteJob(jobId) {
-    const confirmed = window.confirm("Delete this job?");
-    if (!confirmed) return;
-
+    if (!window.confirm("Delete this job?")) return;
     setJobs((current) => current.filter((job) => job.id !== jobId));
   }
 
@@ -275,11 +345,9 @@ export default function CleanerLeadTrackerPage() {
   function saveCleaner(cleaner) {
     setCleaners((current) => {
       const exists = current.some((item) => item.id === cleaner.id);
-
       if (exists) {
         return current.map((item) => (item.id === cleaner.id ? cleaner : item));
       }
-
       return [cleaner, ...current];
     });
 
@@ -288,9 +356,7 @@ export default function CleanerLeadTrackerPage() {
   }
 
   function deleteCleaner(cleanerId) {
-    const confirmed = window.confirm("Delete this cleaner?");
-    if (!confirmed) return;
-
+    if (!window.confirm("Delete this cleaner?")) return;
     setCleaners((current) => current.filter((cleaner) => cleaner.id !== cleanerId));
   }
 
@@ -338,66 +404,17 @@ ${job.customerNotes || "No extra notes"}
 Please contact the customer quickly and professionally.`;
   }
 
-  function exportJobsCsv() {
-    const headers = Object.keys(defaultJob);
-
-    const rows = jobs.map((job) =>
-      headers
-        .map((header) => {
-          const value = job[header] ?? "";
-          return `"${String(value).replaceAll('"', '""')}"`;
-        })
-        .join(",")
-    );
-
-    const csv = [headers.join(","), ...rows].join("
-");
-    const blob = new Blob([csv], { type: "text/csv;charset=utf-8" });
-    const url = URL.createObjectURL(blob);
-
-    const link = document.createElement("a");
-    link.href = url;
-    link.download = "cleaner-leads-export.csv";
-    link.click();
-
-    URL.revokeObjectURL(url);
-  }
-
-  function exportCleanersCsv() {
-    const headers = Object.keys(defaultCleaner);
-
-    const rows = cleaners.map((cleaner) =>
-      headers
-        .map((header) => {
-          const value = cleaner[header] ?? "";
-          return `"${String(value).replaceAll('"', '""')}"`;
-        })
-        .join(",")
-    );
-
-    const csv = [headers.join(","), ...rows].join("
-");
-    const blob = new Blob([csv], { type: "text/csv;charset=utf-8" });
-    const url = URL.createObjectURL(blob);
-
-    const link = document.createElement("a");
-    link.href = url;
-    link.download = "cleaner-partners-export.csv";
-    link.click();
-
-    URL.revokeObjectURL(url);
-  }
-
-  function csvCell(value) {
-    return `"${String(value ?? "").replaceAll('"', '""')}"`;
-  }
-
   function exportFullBackupCsv() {
     const jobHeaders = Object.keys(defaultJob);
     const cleanerHeaders = Object.keys(defaultCleaner);
 
-    const jobRows = jobs.map((job) => jobHeaders.map((header) => csvCell(job[header])).join(","));
-    const cleanerRows = cleaners.map((cleaner) => cleanerHeaders.map((header) => csvCell(cleaner[header])).join(","));
+    const jobRows = jobs.map((job) =>
+      jobHeaders.map((header) => csvCell(job[header])).join(",")
+    );
+
+    const cleanerRows = cleaners.map((cleaner) =>
+      cleanerHeaders.map((header) => csvCell(cleaner[header])).join(",")
+    );
 
     const csv = [
       "SECTION,JOBS",
@@ -406,8 +423,7 @@ Please contact the customer quickly and professionally.`;
       "SECTION,CLEANERS",
       cleanerHeaders.join(","),
       ...cleanerRows,
-    ].join("
-");
+    ].join(NL);
 
     const blob = new Blob([csv], { type: "text/csv;charset=utf-8" });
     const url = URL.createObjectURL(blob);
@@ -420,130 +436,6 @@ Please contact the customer quickly and professionally.`;
     URL.revokeObjectURL(url);
   }
 
-  function parseCsv(text) {
-    const rows = [];
-    let row = [];
-    let cell = "";
-    let insideQuotes = false;
-
-    for (let i = 0; i < text.length; i += 1) {
-      const char = text[i];
-      const nextChar = text[i + 1];
-
-      if (char === '"' && insideQuotes && nextChar === '"') {
-        cell += '"';
-        i += 1;
-      } else if (char === '"') {
-        insideQuotes = !insideQuotes;
-      } else if (char === "," && !insideQuotes) {
-        row.push(cell);
-        cell = "";
-      } else if ((char === "
-" || char === "
-") && !insideQuotes) {
-        if (char === "
-" && nextChar === "
-") i += 1;
-        row.push(cell);
-        if (row.some((value) => value !== "")) rows.push(row);
-        row = [];
-        cell = "";
-      } else {
-        cell += char;
-      }
-    }
-
-    row.push(cell);
-    if (row.some((value) => value !== "")) rows.push(row);
-
-    return rows;
-  }
-
-  function csvRowsToObjects(text, defaultShape) {
-    const rows = parseCsv(text);
-    if (rows.length < 2) return [];
-
-    const headers = rows[0].map((header) => header.trim());
-
-    return rows.slice(1).map((row) => {
-      const item = { ...defaultShape };
-
-      headers.forEach((header, index) => {
-        if (!(header in item)) return;
-        const value = row[index] ?? "";
-
-        if (typeof item[header] === "boolean") {
-          item[header] = value === "true" || value === "TRUE" || value === "Yes" || value === "yes";
-        } else {
-          item[header] = value;
-        }
-      });
-
-      if (!item.id) item.id = makeId("IMPORTED");
-      return item;
-    });
-  }
-
-  function importJobsCsv(event) {
-    const file = event.target.files?.[0];
-    if (!file) return;
-
-    const reader = new FileReader();
-
-    reader.onload = () => {
-      const importedJobs = csvRowsToObjects(String(reader.result || ""), defaultJob);
-
-      if (importedJobs.length === 0) {
-        alert("No jobs found in this CSV file.");
-        event.target.value = "";
-        return;
-      }
-
-      const replace = window.confirm(
-        `Import ${importedJobs.length} jobs?
-
-Click OK to replace current jobs.
-Click Cancel to add them to current jobs.`
-      );
-
-      setJobs((current) => (replace ? importedJobs : [...importedJobs, ...current]));
-      alert("Jobs imported successfully.");
-      event.target.value = "";
-    };
-
-    reader.readAsText(file);
-  }
-
-  function importCleanersCsv(event) {
-    const file = event.target.files?.[0];
-    if (!file) return;
-
-    const reader = new FileReader();
-
-    reader.onload = () => {
-      const importedCleaners = csvRowsToObjects(String(reader.result || ""), defaultCleaner);
-
-      if (importedCleaners.length === 0) {
-        alert("No cleaners found in this CSV file.");
-        event.target.value = "";
-        return;
-      }
-
-      const replace = window.confirm(
-        `Import ${importedCleaners.length} cleaners?
-
-Click OK to replace current cleaners.
-Click Cancel to add them to current cleaners.`
-      );
-
-      setCleaners((current) => (replace ? importedCleaners : [...importedCleaners, ...current]));
-      alert("Cleaners imported successfully.");
-      event.target.value = "";
-    };
-
-    reader.readAsText(file);
-  }
-
   function importFullBackupCsv(event) {
     const file = event.target.files?.[0];
     if (!file) return;
@@ -552,41 +444,27 @@ Click Cancel to add them to current cleaners.`
 
     reader.onload = () => {
       const rows = parseCsv(String(reader.result || ""));
-      const jobsSectionIndex = rows.findIndex((row) => row[0] === "SECTION" && row[1] === "JOBS");
-      const cleanersSectionIndex = rows.findIndex((row) => row[0] === "SECTION" && row[1] === "CLEANERS");
+      const jobsSectionIndex = rows.findIndex(
+        (row) => row[0] === "SECTION" && row[1] === "JOBS"
+      );
+      const cleanersSectionIndex = rows.findIndex(
+        (row) => row[0] === "SECTION" && row[1] === "CLEANERS"
+      );
 
-      if (jobsSectionIndex === -1 || cleanersSectionIndex === -1 || cleanersSectionIndex <= jobsSectionIndex) {
-        alert("This does not look like a full tracker backup CSV. Please import the file exported from 'Export Full Backup CSV'.");
+      if (
+        jobsSectionIndex === -1 ||
+        cleanersSectionIndex === -1 ||
+        cleanersSectionIndex <= jobsSectionIndex
+      ) {
+        alert(
+          "This does not look like a full tracker backup CSV. Please import the file exported from 'Export Full Backup CSV'."
+        );
         event.target.value = "";
         return;
       }
 
       const jobRows = rows.slice(jobsSectionIndex + 1, cleanersSectionIndex);
       const cleanerRows = rows.slice(cleanersSectionIndex + 1);
-
-      function rowsToObjects(rowsToConvert, defaultShape) {
-        if (rowsToConvert.length < 1) return [];
-
-        const headers = rowsToConvert[0].map((header) => header.trim());
-
-        return rowsToConvert.slice(1).filter((row) => row.some((cell) => cell !== "")).map((row) => {
-          const item = { ...defaultShape };
-
-          headers.forEach((header, index) => {
-            if (!(header in item)) return;
-            const value = row[index] ?? "";
-
-            if (typeof item[header] === "boolean") {
-              item[header] = value === "true" || value === "TRUE" || value === "Yes" || value === "yes";
-            } else {
-              item[header] = value;
-            }
-          });
-
-          if (!item.id) item.id = makeId("IMPORTED");
-          return item;
-        });
-      }
 
       const importedJobs = rowsToObjects(jobRows, defaultJob);
       const importedCleaners = rowsToObjects(cleanerRows, defaultCleaner);
@@ -624,7 +502,8 @@ Click Cancel to add them to current jobs and cleaners.`
           <h1 style={styles.title}>Cleaner Lead Control Centre</h1>
           <p style={styles.subtitle}>
             Track Birmingham and Walsall cleaning leads. Client details stay locked until cleaner
-            payment is recorded. Cleaners must have valid public liability insurance before receiving leads.
+            payment is recorded. Cleaners must have valid public liability insurance before receiving
+            leads.
           </p>
         </div>
 
@@ -635,40 +514,17 @@ Click Cancel to add them to current jobs and cleaners.`
           <button style={styles.secondaryButton} onClick={openNewCleaner}>
             + New Cleaner
           </button>
-          <button style={styles.secondaryButton} onClick={exportJobsCsv}>
-            Export Jobs CSV
-          </button>
-          <button style={styles.secondaryButton} onClick={exportCleanersCsv}>
-            Export Cleaners CSV
-          </button>
           <button style={styles.primaryButton} onClick={exportFullBackupCsv}>
             Export Full Backup CSV
           </button>
-          <button style={styles.primaryButton} onClick={() => importAllInputRef.current?.click()}>
+          <button
+            style={styles.primaryButton}
+            onClick={() => importFullInputRef.current?.click()}
+          >
             Import Full Backup CSV
           </button>
-          <button style={styles.secondaryButton} onClick={() => importJobsInputRef.current?.click()}>
-            Import Jobs CSV
-          </button>
-          <button style={styles.secondaryButton} onClick={() => importCleanersInputRef.current?.click()}>
-            Import Cleaners CSV
-          </button>
           <input
-            ref={importJobsInputRef}
-            type="file"
-            accept=".csv,text/csv"
-            style={{ display: "none" }}
-            onChange={importJobsCsv}
-          />
-          <input
-            ref={importCleanersInputRef}
-            type="file"
-            accept=".csv,text/csv"
-            style={{ display: "none" }}
-            onChange={importCleanersCsv}
-          />
-          <input
-            ref={importAllInputRef}
+            ref={importFullInputRef}
             type="file"
             accept=".csv,text/csv"
             style={{ display: "none" }}
@@ -742,7 +598,7 @@ Click Cancel to add them to current jobs and cleaners.`
 
                         <p style={styles.jobMeta}>
                           {job.area} • {job.customerPostcode || "No postcode"} •{" "}
-                          {job.propertySize || "No property size"} • Preferred: {" "}
+                          {job.propertySize || "No property size"} • Preferred:{" "}
                           {job.preferredDate || "Not added"}
                         </p>
 
@@ -810,7 +666,8 @@ Click Cancel to add them to current jobs and cleaners.`
             <div style={styles.cleanerGrid}>
               {cleaners.map((cleaner) => {
                 const approved = cleanerCanReceiveLeads(cleaner);
-                const expired = cleaner.insuranceExpiryDate && isInsuranceExpired(cleaner.insuranceExpiryDate);
+                const expired =
+                  cleaner.insuranceExpiryDate && isInsuranceExpired(cleaner.insuranceExpiryDate);
 
                 return (
                   <article key={cleaner.id} style={styles.cleanerCard}>
@@ -826,9 +683,13 @@ Click Cancel to add them to current jobs and cleaners.`
 
                     <p style={styles.jobMeta}>Phone: {cleaner.phone || "Not added"}</p>
                     <p style={styles.jobMeta}>Email: {cleaner.email || "Not added"}</p>
-                    <p style={styles.jobMeta}>Services: {cleaner.servicesOffered || "Not added"}</p>
                     <p style={styles.jobMeta}>
-                      Insurance: {cleaner.insuranceProvider || "Not added"} • Cover: {cleaner.insuranceCoverAmount || "Not added"} • Expires: {cleaner.insuranceExpiryDate || "Not added"}
+                      Services: {cleaner.servicesOffered || "Not added"}
+                    </p>
+                    <p style={styles.jobMeta}>
+                      Insurance: {cleaner.insuranceProvider || "Not added"} • Cover:{" "}
+                      {cleaner.insuranceCoverAmount || "Not added"} • Expires:{" "}
+                      {cleaner.insuranceExpiryDate || "Not added"}
                     </p>
 
                     {expired && (
@@ -850,10 +711,16 @@ Click Cancel to add them to current jobs and cleaners.`
                     </div>
 
                     <div style={styles.cardButtons}>
-                      <button style={styles.secondaryButton} onClick={() => openEditCleaner(cleaner)}>
+                      <button
+                        style={styles.secondaryButton}
+                        onClick={() => openEditCleaner(cleaner)}
+                      >
                         Edit
                       </button>
-                      <button style={styles.dangerButton} onClick={() => deleteCleaner(cleaner.id)}>
+                      <button
+                        style={styles.dangerButton}
+                        onClick={() => deleteCleaner(cleaner.id)}
+                      >
                         Delete
                       </button>
                     </div>
@@ -872,7 +739,8 @@ Click Cancel to add them to current jobs and cleaners.`
           <div style={styles.policyBoxImportant}>
             <h3 style={styles.policyTitle}>Main cleaner rule</h3>
             <p style={styles.policyText}>
-              No insurance proof = no leads. Only send customer enquiries to cleaners who have provided valid public liability insurance proof and accepted your payment terms.
+              No insurance proof = no leads. Only send customer enquiries to cleaners who have
+              provided valid public liability insurance proof and accepted your payment terms.
             </p>
           </div>
 
@@ -906,21 +774,29 @@ Click Cancel to add them to current jobs and cleaners.`
           <div style={styles.policyBox}>
             <h3 style={styles.policyTitle}>Cleaner onboarding message</h3>
             <p style={styles.policyText}>
-              “To protect customers and keep the service professional, I only work with independent cleaners who can provide proof of valid public liability insurance. Before I can send any customer enquiries, please send your full name, areas covered, services offered, prices, availability, proof of public liability insurance, and any reviews or photos you have.”
+              “To protect customers and keep the service professional, I only work with independent
+              cleaners who can provide proof of valid public liability insurance. Before I can send
+              any customer enquiries, please send your full name, areas covered, services offered,
+              prices, availability, proof of public liability insurance, and any reviews or photos
+              you have.”
             </p>
           </div>
 
           <div style={styles.policyBox}>
             <h3 style={styles.policyTitle}>Refund / replacement rule</h3>
             <p style={styles.policyText}>
-              Replace or refund only if the lead is fake, the phone number is wrong, the customer never requested cleaning, or you accidentally sold the same lead twice. Do not refund because the cleaner quoted too high, replied too slowly, or failed to win the job.
+              Replace or refund only if the lead is fake, the phone number is wrong, the customer
+              never requested cleaning, or you accidentally sold the same lead twice. Do not refund
+              because the cleaner quoted too high, replied too slowly, or failed to win the job.
             </p>
           </div>
 
           <div style={styles.policyBox}>
             <h3 style={styles.policyTitle}>Customer wording</h3>
             <p style={styles.policyText}>
-              “We are a local matching service, not the cleaning company. By sending your details, you agree that we may share your enquiry with a suitable independent cleaner so they can contact you about your cleaning request.”
+              “We are a local matching service, not the cleaning company. By sending your details,
+              you agree that we may share your enquiry with a suitable independent cleaner so they
+              can contact you about your cleaning request.”
             </p>
           </div>
         </section>
@@ -930,7 +806,7 @@ Click Cancel to add them to current jobs and cleaners.`
         <JobModal
           job={editingJob}
           setJob={setEditingJob}
-          cleaners={cleaners}
+          cleaners={approvedCleaners}
           onSave={saveJob}
           onClose={() => {
             setJobFormOpen(false);
@@ -956,7 +832,6 @@ Click Cancel to add them to current jobs and cleaners.`
 
 function JobModal({ job, setJob, cleaners, onSave, onClose }) {
   const canRelease = job.cleanerPaid && job.paymentAmountReceived && job.paymentDate;
-  const approvedCleaners = cleaners.filter((cleaner) => cleanerCanReceiveLeads(cleaner));
 
   function update(field, value) {
     setJob((current) => ({
@@ -972,7 +847,8 @@ function JobModal({ job, setJob, cleaners, onSave, onClose }) {
           <div>
             <h2 style={styles.modalTitle}>Job Details</h2>
             <p style={styles.modalSubtitle}>
-              Fill in the enquiry, allocate an approved insured cleaner, record payment, then release details.
+              Fill in the enquiry, allocate an approved insured cleaner, record payment, then
+              release details.
             </p>
           </div>
           <button style={styles.secondaryButton} onClick={onClose}>
@@ -1120,7 +996,7 @@ function JobModal({ job, setJob, cleaners, onSave, onClose }) {
                 onChange={(event) => update("allocatedCleaner", event.target.value)}
               >
                 <option value="">Unallocated</option>
-                {approvedCleaners.map((cleaner) => (
+                {cleaners.map((cleaner) => (
                   <option key={cleaner.id} value={cleaner.name}>
                     {cleaner.name}
                   </option>
@@ -1147,9 +1023,10 @@ function JobModal({ job, setJob, cleaners, onSave, onClose }) {
             </Field>
           </div>
 
-          {approvedCleaners.length === 0 && (
+          {cleaners.length === 0 && (
             <div style={styles.warningBox}>
-              ⚠️ No approved cleaners available. Add a cleaner with valid insurance proof and accepted payment terms first.
+              ⚠️ No approved cleaners available. Add a cleaner with valid insurance proof and
+              accepted payment terms first.
             </div>
           )}
 
@@ -1171,9 +1048,7 @@ function JobModal({ job, setJob, cleaners, onSave, onClose }) {
                 checked={job.cleanerPaid}
                 onChange={(event) => {
                   update("cleanerPaid", event.target.checked);
-                  if (!event.target.checked) {
-                    update("detailsReleased", false);
-                  }
+                  if (!event.target.checked) update("detailsReleased", false);
                 }}
               />
               Cleaner Paid?
@@ -1410,7 +1285,8 @@ function CleanerModal({ cleaner, setCleaner, onSave, onClose }) {
           </div>
 
           <div style={styles.warningBox}>
-            Rule: no insurance proof, missing insurance details, expired insurance, or no accepted payment terms = do not send leads.
+            Rule: no insurance proof, missing insurance details, expired insurance, or no accepted
+            payment terms = do not send leads.
           </div>
         </FormSection>
 
