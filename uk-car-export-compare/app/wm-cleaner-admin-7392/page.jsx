@@ -2,8 +2,8 @@
 
 import React, { useEffect, useMemo, useState } from "react";
 
-const STORAGE_KEY = "wm_cleaner_jobs_v2";
-const CLEANERS_KEY = "wm_cleaner_partners_v2";
+const STORAGE_KEY = "wm_cleaner_jobs_v3";
+const CLEANERS_KEY = "wm_cleaner_partners_v3";
 
 const serviceTypes = [
   "Regular Weekly Clean",
@@ -89,6 +89,9 @@ const defaultCleaner = {
   areasCovered: "",
   servicesOffered: "",
   insuranceProofSeen: false,
+  insuranceProvider: "",
+  insuranceCoverAmount: "",
+  insuranceExpiryDate: "",
   reviewsProofSeen: false,
   paymentTermsAccepted: false,
   reliabilityScore: "New",
@@ -111,6 +114,24 @@ function money(value) {
 function copyToClipboard(text) {
   navigator.clipboard.writeText(text);
   alert("Copied to clipboard");
+}
+
+function isInsuranceExpired(expiryDate) {
+  if (!expiryDate) return true;
+  const todayDate = new Date(today());
+  const expiry = new Date(expiryDate);
+  return expiry < todayDate;
+}
+
+function cleanerCanReceiveLeads(cleaner) {
+  return Boolean(
+    cleaner.insuranceProofSeen &&
+      cleaner.insuranceProvider &&
+      cleaner.insuranceCoverAmount &&
+      cleaner.insuranceExpiryDate &&
+      !isInsuranceExpired(cleaner.insuranceExpiryDate) &&
+      cleaner.paymentTermsAccepted
+  );
 }
 
 export default function CleanerLeadTrackerPage() {
@@ -149,6 +170,7 @@ export default function CleanerLeadTrackerPage() {
     const releasedLeads = jobs.filter((job) => job.detailsReleased).length;
     const lockedLeads = jobs.filter((job) => !job.cleanerPaid).length;
     const revenue = jobs.reduce((sum, job) => sum + money(job.paymentAmountReceived), 0);
+    const approvedCleaners = cleaners.filter((cleaner) => cleanerCanReceiveLeads(cleaner)).length;
 
     return {
       totalLeads,
@@ -156,8 +178,9 @@ export default function CleanerLeadTrackerPage() {
       releasedLeads,
       lockedLeads,
       revenue,
+      approvedCleaners,
     };
-  }, [jobs]);
+  }, [jobs, cleaners]);
 
   const filteredJobs = useMemo(() => {
     const q = search.toLowerCase();
@@ -324,7 +347,8 @@ Please contact the customer quickly and professionally.`;
         .join(",")
     );
 
-    const csv = [headers.join(","), ...rows].join("\n");
+    const csv = [headers.join(","), ...rows].join("
+");
     const blob = new Blob([csv], { type: "text/csv;charset=utf-8" });
     const url = URL.createObjectURL(blob);
 
@@ -344,7 +368,7 @@ Please contact the customer quickly and professionally.`;
           <h1 style={styles.title}>Cleaner Lead Control Centre</h1>
           <p style={styles.subtitle}>
             Track Birmingham and Walsall cleaning leads. Client details stay locked until cleaner
-            payment is recorded.
+            payment is recorded. Cleaners must have valid public liability insurance before receiving leads.
           </p>
         </div>
 
@@ -366,6 +390,7 @@ Please contact the customer quickly and professionally.`;
         <StatCard label="Paid Leads" value={stats.paidLeads} />
         <StatCard label="Details Released" value={stats.releasedLeads} />
         <StatCard label="Locked Leads" value={stats.lockedLeads} />
+        <StatCard label="Approved Cleaners" value={stats.approvedCleaners} />
         <StatCard label="Revenue" value={`£${stats.revenue.toFixed(2)}`} />
       </section>
 
@@ -425,7 +450,7 @@ Please contact the customer quickly and professionally.`;
 
                         <p style={styles.jobMeta}>
                           {job.area} • {job.customerPostcode || "No postcode"} •{" "}
-                          {job.propertySize || "No property size"} • Preferred:{" "}
+                          {job.propertySize || "No property size"} • Preferred: {" "}
                           {job.preferredDate || "Not added"}
                         </p>
 
@@ -486,47 +511,63 @@ Please contact the customer quickly and professionally.`;
             <div style={styles.emptyCard}>
               <h2 style={styles.emptyTitle}>No cleaner partners yet</h2>
               <p style={styles.emptyText}>
-                Add reliable cleaners before you begin sending paid leads.
+                Add reliable insured cleaners before you begin sending paid leads.
               </p>
             </div>
           ) : (
             <div style={styles.cleanerGrid}>
-              {cleaners.map((cleaner) => (
-                <article key={cleaner.id} style={styles.cleanerCard}>
-                  <div style={styles.cleanerTop}>
-                    <div>
-                      <h2 style={styles.jobTitle}>{cleaner.name}</h2>
-                      <p style={styles.jobMeta}>{cleaner.areasCovered}</p>
+              {cleaners.map((cleaner) => {
+                const approved = cleanerCanReceiveLeads(cleaner);
+                const expired = cleaner.insuranceExpiryDate && isInsuranceExpired(cleaner.insuranceExpiryDate);
+
+                return (
+                  <article key={cleaner.id} style={styles.cleanerCard}>
+                    <div style={styles.cleanerTop}>
+                      <div>
+                        <h2 style={styles.jobTitle}>{cleaner.name}</h2>
+                        <p style={styles.jobMeta}>{cleaner.areasCovered}</p>
+                      </div>
+                      <span style={approved ? styles.successBadge : styles.lockedBadge}>
+                        {approved ? "Approved for leads" : "Do not send leads"}
+                      </span>
                     </div>
-                    <span style={styles.outlineBadge}>{cleaner.reliabilityScore}</span>
-                  </div>
 
-                  <p style={styles.jobMeta}>Phone: {cleaner.phone || "Not added"}</p>
-                  <p style={styles.jobMeta}>Email: {cleaner.email || "Not added"}</p>
-                  <p style={styles.jobMeta}>Services: {cleaner.servicesOffered || "Not added"}</p>
+                    <p style={styles.jobMeta}>Phone: {cleaner.phone || "Not added"}</p>
+                    <p style={styles.jobMeta}>Email: {cleaner.email || "Not added"}</p>
+                    <p style={styles.jobMeta}>Services: {cleaner.servicesOffered || "Not added"}</p>
+                    <p style={styles.jobMeta}>
+                      Insurance: {cleaner.insuranceProvider || "Not added"} • Cover: {cleaner.insuranceCoverAmount || "Not added"} • Expires: {cleaner.insuranceExpiryDate || "Not added"}
+                    </p>
 
-                  <div style={styles.badgeRow}>
-                    {cleaner.insuranceProofSeen && (
-                      <span style={styles.successBadge}>Insurance proof</span>
+                    {expired && (
+                      <div style={styles.warningBox}>
+                        ⚠️ Insurance appears expired. Do not send leads until updated proof is seen.
+                      </div>
                     )}
-                    {cleaner.reviewsProofSeen && (
-                      <span style={styles.successBadge}>Reviews/photos</span>
-                    )}
-                    {cleaner.paymentTermsAccepted && (
-                      <span style={styles.successBadge}>Terms accepted</span>
-                    )}
-                  </div>
 
-                  <div style={styles.cardButtons}>
-                    <button style={styles.secondaryButton} onClick={() => openEditCleaner(cleaner)}>
-                      Edit
-                    </button>
-                    <button style={styles.dangerButton} onClick={() => deleteCleaner(cleaner.id)}>
-                      Delete
-                    </button>
-                  </div>
-                </article>
-              ))}
+                    <div style={styles.badgeRow}>
+                      {cleaner.insuranceProofSeen && (
+                        <span style={styles.successBadge}>Insurance proof seen</span>
+                      )}
+                      {cleaner.reviewsProofSeen && (
+                        <span style={styles.successBadge}>Reviews/photos</span>
+                      )}
+                      {cleaner.paymentTermsAccepted && (
+                        <span style={styles.successBadge}>Terms accepted</span>
+                      )}
+                    </div>
+
+                    <div style={styles.cardButtons}>
+                      <button style={styles.secondaryButton} onClick={() => openEditCleaner(cleaner)}>
+                        Edit
+                      </button>
+                      <button style={styles.dangerButton} onClick={() => deleteCleaner(cleaner.id)}>
+                        Delete
+                      </button>
+                    </div>
+                  </article>
+                );
+              })}
             </div>
           )}
         </section>
@@ -535,6 +576,13 @@ Please contact the customer quickly and professionally.`;
       {activeTab === "rules" && (
         <section style={styles.rulesCard}>
           <h2 style={styles.sectionTitle}>Airtight Operating Rules</h2>
+
+          <div style={styles.policyBoxImportant}>
+            <h3 style={styles.policyTitle}>Main cleaner rule</h3>
+            <p style={styles.policyText}>
+              No insurance proof = no leads. Only send customer enquiries to cleaners who have provided valid public liability insurance proof and accepted your payment terms.
+            </p>
+          </div>
 
           <div style={styles.rulesGrid}>
             <RuleCard
@@ -553,23 +601,34 @@ Please contact the customer quickly and professionally.`;
               title="4. Record the release"
               text="After releasing details, tick details released and add the release date. This protects you if there is a dispute later."
             />
+            <RuleCard
+              title="5. Insurance check"
+              text="Store the insurance provider, cover amount and expiry date. If insurance has expired or proof is missing, do not send that cleaner any leads."
+            />
+            <RuleCard
+              title="6. Independent cleaners only"
+              text="Cleaners are independent self-employed providers, not your employees. They handle their own quotes, bookings, work, payments, insurance and customer service."
+            />
+          </div>
+
+          <div style={styles.policyBox}>
+            <h3 style={styles.policyTitle}>Cleaner onboarding message</h3>
+            <p style={styles.policyText}>
+              “To protect customers and keep the service professional, I only work with independent cleaners who can provide proof of valid public liability insurance. Before I can send any customer enquiries, please send your full name, areas covered, services offered, prices, availability, proof of public liability insurance, and any reviews or photos you have.”
+            </p>
           </div>
 
           <div style={styles.policyBox}>
             <h3 style={styles.policyTitle}>Refund / replacement rule</h3>
             <p style={styles.policyText}>
-              Replace or refund only if the lead is fake, the phone number is wrong, the customer
-              never requested cleaning, or you accidentally sold the same lead twice. Do not refund
-              because the cleaner quoted too high, replied too slowly, or failed to win the job.
+              Replace or refund only if the lead is fake, the phone number is wrong, the customer never requested cleaning, or you accidentally sold the same lead twice. Do not refund because the cleaner quoted too high, replied too slowly, or failed to win the job.
             </p>
           </div>
 
           <div style={styles.policyBox}>
             <h3 style={styles.policyTitle}>Customer wording</h3>
             <p style={styles.policyText}>
-              “We are a local matching service, not the cleaning company. By sending your details,
-              you agree that we may share your enquiry with a suitable independent cleaner so they
-              can contact you about your cleaning request.”
+              “We are a local matching service, not the cleaning company. By sending your details, you agree that we may share your enquiry with a suitable independent cleaner so they can contact you about your cleaning request.”
             </p>
           </div>
         </section>
@@ -605,6 +664,7 @@ Please contact the customer quickly and professionally.`;
 
 function JobModal({ job, setJob, cleaners, onSave, onClose }) {
   const canRelease = job.cleanerPaid && job.paymentAmountReceived && job.paymentDate;
+  const approvedCleaners = cleaners.filter((cleaner) => cleanerCanReceiveLeads(cleaner));
 
   function update(field, value) {
     setJob((current) => ({
@@ -620,7 +680,7 @@ function JobModal({ job, setJob, cleaners, onSave, onClose }) {
           <div>
             <h2 style={styles.modalTitle}>Job Details</h2>
             <p style={styles.modalSubtitle}>
-              Fill in the enquiry, allocate cleaner, record payment, then release details.
+              Fill in the enquiry, allocate an approved insured cleaner, record payment, then release details.
             </p>
           </div>
           <button style={styles.secondaryButton} onClick={onClose}>
@@ -768,7 +828,7 @@ function JobModal({ job, setJob, cleaners, onSave, onClose }) {
                 onChange={(event) => update("allocatedCleaner", event.target.value)}
               >
                 <option value="">Unallocated</option>
-                {cleaners.map((cleaner) => (
+                {approvedCleaners.map((cleaner) => (
                   <option key={cleaner.id} value={cleaner.name}>
                     {cleaner.name}
                   </option>
@@ -794,6 +854,12 @@ function JobModal({ job, setJob, cleaners, onSave, onClose }) {
               />
             </Field>
           </div>
+
+          {approvedCleaners.length === 0 && (
+            <div style={styles.warningBox}>
+              ⚠️ No approved cleaners available. Add a cleaner with valid insurance proof and accepted payment terms first.
+            </div>
+          )}
 
           <Field label="Anonymised Lead Summary">
             <textarea
@@ -919,6 +985,9 @@ function JobModal({ job, setJob, cleaners, onSave, onClose }) {
 }
 
 function CleanerModal({ cleaner, setCleaner, onSave, onClose }) {
+  const approved = cleanerCanReceiveLeads(cleaner);
+  const expired = cleaner.insuranceExpiryDate && isInsuranceExpired(cleaner.insuranceExpiryDate);
+
   function update(field, value) {
     setCleaner((current) => ({
       ...current,
@@ -933,7 +1002,7 @@ function CleanerModal({ cleaner, setCleaner, onSave, onClose }) {
           <div>
             <h2 style={styles.modalTitle}>Cleaner Partner</h2>
             <p style={styles.modalSubtitle}>
-              Store cleaner details, proof checks and payment terms.
+              Store cleaner details, insurance proof, expiry date and payment terms.
             </p>
           </div>
           <button style={styles.secondaryButton} onClick={onClose}>
@@ -941,9 +1010,21 @@ function CleanerModal({ cleaner, setCleaner, onSave, onClose }) {
           </button>
         </div>
 
+        <div style={approved ? styles.successBox : styles.warningBox}>
+          {approved
+            ? "✅ This cleaner is approved to receive leads."
+            : "⚠️ Do not send leads until valid insurance proof is seen and payment terms are accepted."}
+        </div>
+
+        {expired && (
+          <div style={styles.warningBox}>
+            ⚠️ Insurance expiry date has passed. Ask for updated proof before sending leads.
+          </div>
+        )}
+
         <FormSection title="Cleaner Details">
           <div style={styles.formGrid}>
-            <Field label="Cleaner / Company Name">
+            <Field label="Cleaner / Full Name">
               <input
                 style={styles.input}
                 value={cleaner.name}
@@ -995,17 +1076,54 @@ function CleanerModal({ cleaner, setCleaner, onSave, onClose }) {
               onChange={(event) => update("servicesOffered", event.target.value)}
             />
           </Field>
+        </FormSection>
 
-          <div style={styles.checkboxGrid}>
+        <FormSection title="Mandatory Insurance Proof">
+          <div style={styles.formGrid}>
             <label style={styles.checkboxLabel}>
               <input
                 type="checkbox"
                 checked={cleaner.insuranceProofSeen}
                 onChange={(event) => update("insuranceProofSeen", event.target.checked)}
               />
-              Insurance proof seen
+              Public liability insurance proof seen
             </label>
 
+            <Field label="Insurance Provider">
+              <input
+                style={styles.input}
+                placeholder="Example: AXA, Simply Business, Hiscox"
+                value={cleaner.insuranceProvider}
+                onChange={(event) => update("insuranceProvider", event.target.value)}
+              />
+            </Field>
+
+            <Field label="Cover Amount">
+              <input
+                style={styles.input}
+                placeholder="Example: £1m or £2m"
+                value={cleaner.insuranceCoverAmount}
+                onChange={(event) => update("insuranceCoverAmount", event.target.value)}
+              />
+            </Field>
+
+            <Field label="Insurance Expiry Date">
+              <input
+                style={styles.input}
+                type="date"
+                value={cleaner.insuranceExpiryDate}
+                onChange={(event) => update("insuranceExpiryDate", event.target.value)}
+              />
+            </Field>
+          </div>
+
+          <div style={styles.warningBox}>
+            Rule: no insurance proof, missing insurance details, expired insurance, or no accepted payment terms = do not send leads.
+          </div>
+        </FormSection>
+
+        <FormSection title="Checks & Terms">
+          <div style={styles.checkboxGrid}>
             <label style={styles.checkboxLabel}>
               <input
                 type="checkbox"
@@ -1030,6 +1148,7 @@ function CleanerModal({ cleaner, setCleaner, onSave, onClose }) {
               style={styles.textarea}
               value={cleaner.notes}
               onChange={(event) => update("notes", event.target.value)}
+              placeholder="Example: Public liability insurance seen. Provider: AXA. Cover: £1m. Expires: 12/03/2027."
             />
           </Field>
         </FormSection>
@@ -1101,8 +1220,7 @@ const styles = {
     background: "#f8fafc",
     padding: "32px",
     color: "#0f172a",
-    fontFamily:
-      'Arial, Helvetica, sans-serif',
+    fontFamily: "Arial, Helvetica, sans-serif",
   },
   header: {
     maxWidth: "1200px",
@@ -1294,6 +1412,7 @@ const styles = {
     gap: "8px",
     alignItems: "center",
     flexWrap: "wrap",
+    marginTop: "10px",
   },
   jobTitle: {
     margin: 0,
@@ -1309,6 +1428,7 @@ const styles = {
     display: "flex",
     gap: "8px",
     flexWrap: "wrap",
+    marginTop: "14px",
   },
   lockedBadge: {
     background: "#fee2e2",
@@ -1382,6 +1502,7 @@ const styles = {
     justifyContent: "space-between",
     gap: "12px",
     marginBottom: "12px",
+    flexWrap: "wrap",
   },
   rulesCard: {
     maxWidth: "1200px",
@@ -1418,6 +1539,13 @@ const styles = {
     color: "#475569",
     fontSize: "14px",
     lineHeight: "1.5",
+  },
+  policyBoxImportant: {
+    marginBottom: "16px",
+    background: "#fee2e2",
+    border: "1px solid #fecaca",
+    borderRadius: "16px",
+    padding: "16px",
   },
   policyBox: {
     marginTop: "16px",
