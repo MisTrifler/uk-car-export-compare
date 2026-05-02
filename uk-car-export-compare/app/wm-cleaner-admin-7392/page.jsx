@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 
 const STORAGE_KEY = "wm_cleaner_jobs_v3";
 const CLEANERS_KEY = "wm_cleaner_partners_v3";
@@ -143,6 +143,9 @@ export default function CleanerLeadTrackerPage() {
   const [cleanerFormOpen, setCleanerFormOpen] = useState(false);
   const [editingJob, setEditingJob] = useState(null);
   const [editingCleaner, setEditingCleaner] = useState(null);
+  const importJobsInputRef = useRef(null);
+  const importCleanersInputRef = useRef(null);
+  const importAllInputRef = useRef(null);
 
   useEffect(() => {
     try {
@@ -360,6 +363,259 @@ Please contact the customer quickly and professionally.`;
     URL.revokeObjectURL(url);
   }
 
+  function exportCleanersCsv() {
+    const headers = Object.keys(defaultCleaner);
+
+    const rows = cleaners.map((cleaner) =>
+      headers
+        .map((header) => {
+          const value = cleaner[header] ?? "";
+          return `"${String(value).replaceAll('"', '""')}"`;
+        })
+        .join(",")
+    );
+
+    const csv = [headers.join(","), ...rows].join("
+");
+    const blob = new Blob([csv], { type: "text/csv;charset=utf-8" });
+    const url = URL.createObjectURL(blob);
+
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = "cleaner-partners-export.csv";
+    link.click();
+
+    URL.revokeObjectURL(url);
+  }
+
+  function csvCell(value) {
+    return `"${String(value ?? "").replaceAll('"', '""')}"`;
+  }
+
+  function exportFullBackupCsv() {
+    const jobHeaders = Object.keys(defaultJob);
+    const cleanerHeaders = Object.keys(defaultCleaner);
+
+    const jobRows = jobs.map((job) => jobHeaders.map((header) => csvCell(job[header])).join(","));
+    const cleanerRows = cleaners.map((cleaner) => cleanerHeaders.map((header) => csvCell(cleaner[header])).join(","));
+
+    const csv = [
+      "SECTION,JOBS",
+      jobHeaders.join(","),
+      ...jobRows,
+      "SECTION,CLEANERS",
+      cleanerHeaders.join(","),
+      ...cleanerRows,
+    ].join("
+");
+
+    const blob = new Blob([csv], { type: "text/csv;charset=utf-8" });
+    const url = URL.createObjectURL(blob);
+
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = "cleaner-lead-tracker-full-backup.csv";
+    link.click();
+
+    URL.revokeObjectURL(url);
+  }
+
+  function parseCsv(text) {
+    const rows = [];
+    let row = [];
+    let cell = "";
+    let insideQuotes = false;
+
+    for (let i = 0; i < text.length; i += 1) {
+      const char = text[i];
+      const nextChar = text[i + 1];
+
+      if (char === '"' && insideQuotes && nextChar === '"') {
+        cell += '"';
+        i += 1;
+      } else if (char === '"') {
+        insideQuotes = !insideQuotes;
+      } else if (char === "," && !insideQuotes) {
+        row.push(cell);
+        cell = "";
+      } else if ((char === "
+" || char === "
+") && !insideQuotes) {
+        if (char === "
+" && nextChar === "
+") i += 1;
+        row.push(cell);
+        if (row.some((value) => value !== "")) rows.push(row);
+        row = [];
+        cell = "";
+      } else {
+        cell += char;
+      }
+    }
+
+    row.push(cell);
+    if (row.some((value) => value !== "")) rows.push(row);
+
+    return rows;
+  }
+
+  function csvRowsToObjects(text, defaultShape) {
+    const rows = parseCsv(text);
+    if (rows.length < 2) return [];
+
+    const headers = rows[0].map((header) => header.trim());
+
+    return rows.slice(1).map((row) => {
+      const item = { ...defaultShape };
+
+      headers.forEach((header, index) => {
+        if (!(header in item)) return;
+        const value = row[index] ?? "";
+
+        if (typeof item[header] === "boolean") {
+          item[header] = value === "true" || value === "TRUE" || value === "Yes" || value === "yes";
+        } else {
+          item[header] = value;
+        }
+      });
+
+      if (!item.id) item.id = makeId("IMPORTED");
+      return item;
+    });
+  }
+
+  function importJobsCsv(event) {
+    const file = event.target.files?.[0];
+    if (!file) return;
+
+    const reader = new FileReader();
+
+    reader.onload = () => {
+      const importedJobs = csvRowsToObjects(String(reader.result || ""), defaultJob);
+
+      if (importedJobs.length === 0) {
+        alert("No jobs found in this CSV file.");
+        event.target.value = "";
+        return;
+      }
+
+      const replace = window.confirm(
+        `Import ${importedJobs.length} jobs?
+
+Click OK to replace current jobs.
+Click Cancel to add them to current jobs.`
+      );
+
+      setJobs((current) => (replace ? importedJobs : [...importedJobs, ...current]));
+      alert("Jobs imported successfully.");
+      event.target.value = "";
+    };
+
+    reader.readAsText(file);
+  }
+
+  function importCleanersCsv(event) {
+    const file = event.target.files?.[0];
+    if (!file) return;
+
+    const reader = new FileReader();
+
+    reader.onload = () => {
+      const importedCleaners = csvRowsToObjects(String(reader.result || ""), defaultCleaner);
+
+      if (importedCleaners.length === 0) {
+        alert("No cleaners found in this CSV file.");
+        event.target.value = "";
+        return;
+      }
+
+      const replace = window.confirm(
+        `Import ${importedCleaners.length} cleaners?
+
+Click OK to replace current cleaners.
+Click Cancel to add them to current cleaners.`
+      );
+
+      setCleaners((current) => (replace ? importedCleaners : [...importedCleaners, ...current]));
+      alert("Cleaners imported successfully.");
+      event.target.value = "";
+    };
+
+    reader.readAsText(file);
+  }
+
+  function importFullBackupCsv(event) {
+    const file = event.target.files?.[0];
+    if (!file) return;
+
+    const reader = new FileReader();
+
+    reader.onload = () => {
+      const rows = parseCsv(String(reader.result || ""));
+      const jobsSectionIndex = rows.findIndex((row) => row[0] === "SECTION" && row[1] === "JOBS");
+      const cleanersSectionIndex = rows.findIndex((row) => row[0] === "SECTION" && row[1] === "CLEANERS");
+
+      if (jobsSectionIndex === -1 || cleanersSectionIndex === -1 || cleanersSectionIndex <= jobsSectionIndex) {
+        alert("This does not look like a full tracker backup CSV. Please import the file exported from 'Export Full Backup CSV'.");
+        event.target.value = "";
+        return;
+      }
+
+      const jobRows = rows.slice(jobsSectionIndex + 1, cleanersSectionIndex);
+      const cleanerRows = rows.slice(cleanersSectionIndex + 1);
+
+      function rowsToObjects(rowsToConvert, defaultShape) {
+        if (rowsToConvert.length < 1) return [];
+
+        const headers = rowsToConvert[0].map((header) => header.trim());
+
+        return rowsToConvert.slice(1).filter((row) => row.some((cell) => cell !== "")).map((row) => {
+          const item = { ...defaultShape };
+
+          headers.forEach((header, index) => {
+            if (!(header in item)) return;
+            const value = row[index] ?? "";
+
+            if (typeof item[header] === "boolean") {
+              item[header] = value === "true" || value === "TRUE" || value === "Yes" || value === "yes";
+            } else {
+              item[header] = value;
+            }
+          });
+
+          if (!item.id) item.id = makeId("IMPORTED");
+          return item;
+        });
+      }
+
+      const importedJobs = rowsToObjects(jobRows, defaultJob);
+      const importedCleaners = rowsToObjects(cleanerRows, defaultCleaner);
+
+      const replace = window.confirm(
+        `Full backup found:
+
+Jobs: ${importedJobs.length}
+Cleaners: ${importedCleaners.length}
+
+Click OK to replace current jobs and cleaners.
+Click Cancel to add them to current jobs and cleaners.`
+      );
+
+      if (replace) {
+        setJobs(importedJobs);
+        setCleaners(importedCleaners);
+      } else {
+        setJobs((current) => [...importedJobs, ...current]);
+        setCleaners((current) => [...importedCleaners, ...current]);
+      }
+
+      alert("Full backup imported successfully.");
+      event.target.value = "";
+    };
+
+    reader.readAsText(file);
+  }
+
   return (
     <main style={styles.page}>
       <section style={styles.header}>
@@ -380,8 +636,44 @@ Please contact the customer quickly and professionally.`;
             + New Cleaner
           </button>
           <button style={styles.secondaryButton} onClick={exportJobsCsv}>
-            Export CSV
+            Export Jobs CSV
           </button>
+          <button style={styles.secondaryButton} onClick={exportCleanersCsv}>
+            Export Cleaners CSV
+          </button>
+          <button style={styles.primaryButton} onClick={exportFullBackupCsv}>
+            Export Full Backup CSV
+          </button>
+          <button style={styles.primaryButton} onClick={() => importAllInputRef.current?.click()}>
+            Import Full Backup CSV
+          </button>
+          <button style={styles.secondaryButton} onClick={() => importJobsInputRef.current?.click()}>
+            Import Jobs CSV
+          </button>
+          <button style={styles.secondaryButton} onClick={() => importCleanersInputRef.current?.click()}>
+            Import Cleaners CSV
+          </button>
+          <input
+            ref={importJobsInputRef}
+            type="file"
+            accept=".csv,text/csv"
+            style={{ display: "none" }}
+            onChange={importJobsCsv}
+          />
+          <input
+            ref={importCleanersInputRef}
+            type="file"
+            accept=".csv,text/csv"
+            style={{ display: "none" }}
+            onChange={importCleanersCsv}
+          />
+          <input
+            ref={importAllInputRef}
+            type="file"
+            accept=".csv,text/csv"
+            style={{ display: "none" }}
+            onChange={importFullBackupCsv}
+          />
         </div>
       </section>
 
