@@ -2,8 +2,8 @@
 
 import React, { useEffect, useMemo, useRef, useState } from "react";
 
-const STORAGE_KEY = "wm_cleaner_booking_jobs_v1";
-const CLEANERS_KEY = "wm_cleaner_booking_partners_v1";
+const STORAGE_KEY = "wm_cleaner_booking_jobs_v2";
+const CLEANERS_KEY = "wm_cleaner_booking_partners_v2";
 const NL = String.fromCharCode(10);
 const CR = String.fromCharCode(13);
 
@@ -49,17 +49,6 @@ const areas = [
 ];
 
 const paymentMethods = ["Bank Transfer", "Stripe", "PayPal", "Cash", "Other"];
-
-const bookingStatuses = [
-  "New Enquiry",
-  "Quoted to Customer",
-  "Customer Paid - Assign Cleaner",
-  "Cleaner Assigned",
-  "Job Completed",
-  "Cleaner Paid Out",
-  "Cancelled",
-  "Refunded",
-];
 
 const outcomes = ["Pending", "Booked", "Completed", "Cancelled", "Refunded", "Dispute"];
 
@@ -113,6 +102,8 @@ const defaultCleaner = {
   name: "",
   phone: "",
   email: "",
+  baseArea: "Birmingham",
+  basePostcode: "",
   areasCovered: "",
   servicesOffered: "",
   usualPrices: "",
@@ -179,6 +170,187 @@ function calculateYourFee(job) {
   const manualFee = money(job.yourBookingFee);
   if (manualFee > 0) return manualFee;
   return quoted - cleanerFee;
+}
+
+function cleanText(value) {
+  return String(value || "")
+    .toLowerCase()
+    .replaceAll("/", " ")
+    .replaceAll("-", " ")
+    .replaceAll(",", " ")
+    .replaceAll(".", " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function getPostcodePrefix(postcode) {
+  const cleaned = String(postcode || "")
+    .toUpperCase()
+    .replace(/\s+/g, " ")
+    .trim();
+
+  if (!cleaned) return "";
+
+  const firstPart = cleaned.split(" ")[0] || "";
+  return firstPart;
+}
+
+function getPostcodeDistrict(postcode) {
+  const prefix = getPostcodePrefix(postcode);
+  const match = prefix.match(/^[A-Z]+/);
+  return match ? match[0] : "";
+}
+
+function textIncludesAny(text, values) {
+  const clean = cleanText(text);
+  return values.some((value) => clean.includes(cleanText(value)));
+}
+
+function serviceKeywords(serviceType) {
+  const service = cleanText(serviceType);
+
+  if (service.includes("regular")) return ["regular", "weekly", "house", "domestic"];
+  if (service.includes("one off")) return ["one off", "oneoff", "house", "domestic"];
+  if (service.includes("deep")) return ["deep"];
+  if (service.includes("end of tenancy")) return ["end", "tenancy"];
+  if (service.includes("airbnb") || service.includes("changeover")) return ["airbnb", "changeover"];
+  if (service.includes("builders")) return ["builders", "after builders"];
+  if (service.includes("office") || service.includes("shop")) return ["office", "shop", "commercial"];
+  return [service];
+}
+
+function reliabilityPoints(score) {
+  if (score === "Excellent") return 20;
+  if (score === "Good") return 14;
+  if (score === "New") return 8;
+  if (score === "Warning") return -15;
+  if (score === "Do Not Use") return -100;
+  return 0;
+}
+
+function getCleanerMatch(job, cleaner) {
+  let score = 0;
+  const reasons = [];
+  const warnings = [];
+
+  const approved = cleanerCanReceiveBookings(cleaner);
+  const expired = cleaner.insuranceExpiryDate && isInsuranceExpired(cleaner.insuranceExpiryDate);
+
+  const jobArea = cleanText(job.area);
+  const jobPostcodePrefix = getPostcodePrefix(job.customerPostcode);
+  const jobPostcodeDistrict = getPostcodeDistrict(job.customerPostcode);
+  const cleanerBasePrefix = getPostcodePrefix(cleaner.basePostcode);
+  const cleanerBaseDistrict = getPostcodeDistrict(cleaner.basePostcode);
+
+  const cleanerAreas = cleanText(`${cleaner.baseArea} ${cleaner.areasCovered}`);
+  const cleanerServices = cleanText(cleaner.servicesOffered);
+  const cleanerAvailability = cleanText(cleaner.availability);
+  const jobServiceKeywords = serviceKeywords(job.serviceType);
+
+  if (approved) {
+    score += 35;
+    reasons.push("Approved: valid insurance and accepted terms");
+  } else {
+    score -= 80;
+    warnings.push("Cleaner is not fully approved yet");
+  }
+
+  if (expired) {
+    score -= 80;
+    warnings.push("Insurance appears expired");
+  }
+
+  if (cleaner.reliabilityScore === "Do Not Use") {
+    warnings.push("Reliability score is Do Not Use");
+  }
+
+  const exactAreaMatch =
+    jobArea && (cleanerAreas.includes(jobArea) || cleanText(cleaner.baseArea).includes(jobArea));
+
+  if (exactAreaMatch) {
+    score += 25;
+    reasons.push(`Covers ${job.area}`);
+  } else {
+    warnings.push(`Area ${job.area} not clearly listed`);
+  }
+
+  if (
+    jobPostcodePrefix &&
+    cleanerBasePrefix &&
+    jobPostcodePrefix === cleanerBasePrefix
+  ) {
+    score += 30;
+    reasons.push(`Very close postcode match: ${jobPostcodePrefix}`);
+  } else if (
+    jobPostcodeDistrict &&
+    cleanerBaseDistrict &&
+    jobPostcodeDistrict === cleanerBaseDistrict
+  ) {
+    score += 18;
+    reasons.push(`Same postcode district: ${jobPostcodeDistrict}`);
+  } else if (jobPostcodePrefix && cleanerAreas.includes(cleanText(jobPostcodePrefix))) {
+    score += 16;
+    reasons.push(`Postcode area ${jobPostcodePrefix} is listed in cleaner coverage`);
+  }
+
+  const serviceMatch = jobServiceKeywords.some((keyword) =>
+    cleanerServices.includes(cleanText(keyword))
+  );
+
+  if (serviceMatch) {
+    score += 20;
+    reasons.push(`Offers ${job.serviceType}`);
+  } else {
+    warnings.push(`Service ${job.serviceType} not clearly listed`);
+  }
+
+  if (job.preferredDate && cleanerAvailability) {
+    score += 5;
+    reasons.push("Availability notes are recorded");
+  }
+
+  if (cleaner.reviewsProofSeen) {
+    score += 6;
+    reasons.push("Reviews/photos seen");
+  }
+
+  const reliability = reliabilityPoints(cleaner.reliabilityScore);
+  score += reliability;
+
+  if (cleaner.reliabilityScore) {
+    reasons.push(`Reliability: ${cleaner.reliabilityScore}`);
+  }
+
+  if (!cleaner.phone && !cleaner.email) {
+    score -= 10;
+    warnings.push("No cleaner phone/email saved");
+  }
+
+  if (!cleaner.basePostcode) {
+    warnings.push("No cleaner base postcode saved");
+  }
+
+  if (!cleaner.areasCovered) {
+    warnings.push("No areas covered saved");
+  }
+
+  if (!cleaner.servicesOffered) {
+    warnings.push("No services offered saved");
+  }
+
+  return {
+    cleaner,
+    score,
+    reasons,
+    warnings,
+    approved,
+  };
+}
+
+function getCleanerMatches(job, cleaners) {
+  return cleaners
+    .map((cleaner) => getCleanerMatch(job, cleaner))
+    .sort((a, b) => b.score - a.score);
 }
 
 function parseCsv(text) {
@@ -462,9 +634,7 @@ Property size: ${job.propertySize || "Not provided"}
 Preferred date/time: ${job.preferredDate || "Flexible / not provided"} ${job.preferredTime || ""}
 Customer notes: ${job.customerNotes || "No extra notes"}
 
-Customer price: £${job.customerPaymentAmount || job.customerQuotedPrice || "TBC"}
 Cleaner fee offered: £${job.cleanerFeeAgreed || "TBC"}
-My booking/admin fee: £${calculateYourFee(job).toFixed(2)}
 
 Full customer details are released after you accept the job. You remain self-employed and responsible for your own work, tools, transport, insurance, tax and service quality.`;
   }
@@ -589,7 +759,8 @@ Click Cancel to add them to current jobs and cleaners.`
           <h1 style={styles.title}>Cleaner Booking Control Centre</h1>
           <p style={styles.subtitle}>
             Customer pays you first. You arrange the booking with an insured independent cleaner,
-            then pay the cleaner after deducting your booking/admin fee.
+            then pay the cleaner after deducting your fee. The system now suggests the best cleaner
+            for each job based on area, postcode, service, approval status and reliability.
           </p>
         </div>
 
@@ -671,6 +842,7 @@ Click Cancel to add them to current jobs and cleaners.`
               {filteredJobs.map((job) => {
                 const canRelease = job.customerPaid && job.allocatedCleaner;
                 const fee = calculateYourFee(job);
+                const topMatch = getCleanerMatches(job, cleaners)[0];
 
                 return (
                   <article key={job.id} style={styles.jobCard}>
@@ -683,12 +855,23 @@ Click Cancel to add them to current jobs and cleaners.`
                         </div>
 
                         <p style={styles.jobMeta}>
-                          {job.area} • {job.customerPostcode || "No postcode"} • {job.propertySize || "No property size"} • Preferred: {job.preferredDate || "Not added"} {job.preferredTime || ""}
+                          {job.area} • {job.customerPostcode || "No postcode"} •{" "}
+                          {job.propertySize || "No property size"} • Preferred:{" "}
+                          {job.preferredDate || "Not added"} {job.preferredTime || ""}
                         </p>
 
                         <p style={styles.jobMeta}>
-                          Cleaner: {job.allocatedCleaner || "Not allocated"} • Customer paid: £{job.customerPaymentAmount || "0"} • Cleaner fee: £{job.cleanerFeeAgreed || "0"} • Your fee: £{fee.toFixed(2)}
+                          Cleaner: {job.allocatedCleaner || "Not allocated"} • Customer paid: £
+                          {job.customerPaymentAmount || "0"} • Cleaner fee: £
+                          {job.cleanerFeeAgreed || "0"} • Your fee: £{fee.toFixed(2)}
                         </p>
+
+                        {topMatch && !job.allocatedCleaner && (
+                          <div style={styles.matchMiniBox}>
+                            ⭐ Best suggested cleaner: <strong>{topMatch.cleaner.name}</strong> — Match score:{" "}
+                            <strong>{topMatch.score}</strong>
+                          </div>
+                        )}
 
                         {!job.customerPaid && (
                           <div style={styles.warningBox}>
@@ -763,6 +946,9 @@ Click Cancel to add them to current jobs and cleaners.`
                     <div style={styles.cleanerTop}>
                       <div>
                         <h2 style={styles.jobTitle}>{cleaner.name}</h2>
+                        <p style={styles.jobMeta}>
+                          Base: {cleaner.baseArea || "Not added"} • {cleaner.basePostcode || "No base postcode"}
+                        </p>
                         <p style={styles.jobMeta}>{cleaner.areasCovered}</p>
                       </div>
                       <span style={approved ? styles.successBadge : styles.lockedBadge}>
@@ -776,11 +962,15 @@ Click Cancel to add them to current jobs and cleaners.`
                     <p style={styles.jobMeta}>Prices: {cleaner.usualPrices || "Not added"}</p>
                     <p style={styles.jobMeta}>Availability: {cleaner.availability || "Not added"}</p>
                     <p style={styles.jobMeta}>
-                      Insurance: {cleaner.insuranceProvider || "Not added"} • Cover: {cleaner.insuranceCoverAmount || "Not added"} • Expires: {cleaner.insuranceExpiryDate || "Not added"}
+                      Insurance: {cleaner.insuranceProvider || "Not added"} • Cover:{" "}
+                      {cleaner.insuranceCoverAmount || "Not added"} • Expires:{" "}
+                      {cleaner.insuranceExpiryDate || "Not added"}
                     </p>
 
                     {expired && (
-                      <div style={styles.warningBox}>⚠️ Insurance appears expired. Do not assign jobs until updated proof is seen.</div>
+                      <div style={styles.warningBox}>
+                        ⚠️ Insurance appears expired. Do not assign jobs until updated proof is seen.
+                      </div>
                     )}
 
                     <div style={styles.badgeRow}>
@@ -820,9 +1010,9 @@ Click Cancel to add them to current jobs and cleaners.`
           <div style={styles.rulesGrid}>
             <RuleCard title="1. Get customer enquiry" text="Collect customer name, phone, postcode, service type, property size, preferred date/time and consent to share details with an independent cleaner." />
             <RuleCard title="2. Quote customer" text="Send the customer a price. The customer must pay before the booking is confirmed." />
-            <RuleCard title="3. Agree cleaner fee" text="Offer the job to an approved insured cleaner and agree their cleaner fee before releasing customer details." />
-            <RuleCard title="4. Release details after payment" text="Only release customer details after customer payment is received and the cleaner is allocated." />
-            <RuleCard title="5. Pay cleaner after completion" text="After the job is completed, pay the cleaner the agreed payout amount and keep your booking/admin fee." />
+            <RuleCard title="3. Use smart matching" text="Check the suggested cleaners and pick the closest suitable cleaner based on area, postcode, service, approval and reliability." />
+            <RuleCard title="4. Agree cleaner fee" text="Offer the job to an approved insured cleaner and agree their cleaner fee before releasing customer details." />
+            <RuleCard title="5. Pay cleaner after completion" text="After the job is completed, pay the cleaner the agreed payout amount and keep your fee." />
             <RuleCard title="6. Insurance mandatory" text="No valid public liability insurance proof, no contractor terms, or expired insurance means no jobs should be assigned." />
           </div>
 
@@ -836,7 +1026,7 @@ Click Cancel to add them to current jobs and cleaners.`
           <div style={styles.policyBox}>
             <h3 style={styles.policyTitle}>Cleaner wording</h3>
             <p style={styles.policyText}>
-              “You remain self-employed and independent. You choose whether to accept each job. We agree the cleaner fee before the booking. After the customer pays and the job is completed, we pay you the agreed amount, while we keep our booking/admin fee.”
+              “You remain self-employed and independent. You choose whether to accept each job. We agree the cleaner fee before the booking. After the customer pays and the job is completed, we pay you the agreed amount.”
             </p>
           </div>
         </section>
@@ -846,7 +1036,7 @@ Click Cancel to add them to current jobs and cleaners.`
         <JobModal
           job={editingJob}
           setJob={setEditingJob}
-          cleaners={approvedCleaners}
+          cleaners={cleaners}
           onSave={saveJob}
           onClose={() => {
             setJobFormOpen(false);
@@ -873,6 +1063,7 @@ Click Cancel to add them to current jobs and cleaners.`
 function JobModal({ job, setJob, cleaners, onSave, onClose }) {
   const canRelease = job.customerPaid && job.allocatedCleaner;
   const calculatedFee = calculateYourFee(job);
+  const matches = useMemo(() => getCleanerMatches(job, cleaners), [job, cleaners]);
 
   function update(field, value) {
     setJob((current) => ({ ...current, [field]: value }));
@@ -884,13 +1075,18 @@ function JobModal({ job, setJob, cleaners, onSave, onClose }) {
     update("outcome", "Completed");
   }
 
+  function assignCleaner(cleaner) {
+    update("allocatedCleaner", cleaner.name);
+    update("cleanerAssignedDate", today());
+  }
+
   return (
     <div style={styles.modalOverlay}>
       <div style={styles.modal}>
         <div style={styles.modalHeader}>
           <div>
             <h2 style={styles.modalTitle}>Booking Details</h2>
-            <p style={styles.modalSubtitle}>Customer pays you first. You pay the cleaner after completion minus your fee.</p>
+            <p style={styles.modalSubtitle}>Customer pays you first. The system suggests the most suitable cleaner for the booking.</p>
           </div>
           <button style={styles.secondaryButton} onClick={onClose}>Close</button>
         </div>
@@ -930,25 +1126,80 @@ function JobModal({ job, setJob, cleaners, onSave, onClose }) {
           </div>
         </FormSection>
 
-        <FormSection title="3. Cleaner Allocation & Your Fee">
+        <FormSection title="3. Smart Cleaner Suggestions">
+          {matches.length === 0 ? (
+            <div style={styles.warningBox}>⚠️ No cleaners saved yet. Add cleaners first.</div>
+          ) : (
+            <div style={styles.matchList}>
+              {matches.slice(0, 5).map((match, index) => (
+                <div key={match.cleaner.id} style={index === 0 ? styles.bestMatchCard : styles.matchCard}>
+                  <div style={styles.matchHeader}>
+                    <div>
+                      <h4 style={styles.matchTitle}>
+                        {index === 0 ? "⭐ Best match: " : ""}
+                        {match.cleaner.name || "Unnamed cleaner"}
+                      </h4>
+                      <p style={styles.jobMeta}>
+                        Score: <strong>{match.score}</strong> • Base: {match.cleaner.baseArea || "No area"}{" "}
+                        {match.cleaner.basePostcode || ""}
+                      </p>
+                    </div>
+                    <button
+                      style={match.approved ? styles.primaryButton : styles.disabledButton}
+                      disabled={!match.approved}
+                      type="button"
+                      onClick={() => assignCleaner(match.cleaner)}
+                    >
+                      Assign this cleaner
+                    </button>
+                  </div>
+
+                  {match.reasons.length > 0 && (
+                    <div style={styles.reasonList}>
+                      {match.reasons.slice(0, 5).map((reason) => (
+                        <span key={reason} style={styles.successBadge}>{reason}</span>
+                      ))}
+                    </div>
+                  )}
+
+                  {match.warnings.length > 0 && (
+                    <div style={styles.reasonList}>
+                      {match.warnings.slice(0, 5).map((warning) => (
+                        <span key={warning} style={styles.lockedBadge}>{warning}</span>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              ))}
+            </div>
+          )}
+        </FormSection>
+
+        <FormSection title="4. Cleaner Allocation & Your Fee">
           <div style={styles.formGrid}>
             <Field label="Allocated Cleaner">
               <select style={styles.input} value={job.allocatedCleaner} onChange={(e) => update("allocatedCleaner", e.target.value)}>
                 <option value="">Unallocated</option>
-                {cleaners.map((cleaner) => <option key={cleaner.id} value={cleaner.name}>{cleaner.name}</option>)}
+                {cleaners
+                  .filter((cleaner) => cleanerCanReceiveBookings(cleaner))
+                  .map((cleaner) => (
+                    <option key={cleaner.id} value={cleaner.name}>{cleaner.name}</option>
+                  ))}
               </select>
             </Field>
             <Field label="Cleaner Fee Agreed £"><input style={styles.input} type="number" value={job.cleanerFeeAgreed} onChange={(e) => update("cleanerFeeAgreed", e.target.value)} /></Field>
-            <Field label="Your Booking/Admin Fee £"><input style={styles.input} type="number" value={job.yourBookingFee} onChange={(e) => update("yourBookingFee", e.target.value)} placeholder={`Auto: £${calculatedFee.toFixed(2)}`} /></Field>
+            <Field label="Your Fee £"><input style={styles.input} type="number" value={job.yourBookingFee} onChange={(e) => update("yourBookingFee", e.target.value)} placeholder={`Auto: £${calculatedFee.toFixed(2)}`} /></Field>
             <Field label="Cleaner Assigned Date"><input style={styles.input} type="date" value={job.cleanerAssignedDate} onChange={(e) => update("cleanerAssignedDate", e.target.value)} /></Field>
             <label style={styles.checkboxLabel}><input type="checkbox" disabled={!canRelease} checked={job.detailsReleasedToCleaner} onChange={(e) => update("detailsReleasedToCleaner", e.target.checked)} /> Details released to cleaner?</label>
             <Field label="Date Details Released"><input style={styles.input} type="date" disabled={!canRelease} value={job.dateDetailsReleased} onChange={(e) => update("dateDetailsReleased", e.target.value)} /></Field>
           </div>
           <div style={styles.successBox}>Calculated expected profit/fee: £{calculatedFee.toFixed(2)}</div>
-          {cleaners.length === 0 && <div style={styles.warningBox}>⚠️ No approved cleaners available. Add an insured cleaner with accepted terms first.</div>}
+          {cleaners.filter((cleaner) => cleanerCanReceiveBookings(cleaner)).length === 0 && (
+            <div style={styles.warningBox}>⚠️ No approved cleaners available. Add an insured cleaner with accepted terms first.</div>
+          )}
         </FormSection>
 
-        <FormSection title="4. Completion & Cleaner Payout">
+        <FormSection title="5. Completion & Cleaner Payout">
           <div style={styles.formGrid}>
             <label style={styles.checkboxLabel}><input type="checkbox" checked={job.jobCompleted} onChange={(e) => update("jobCompleted", e.target.checked)} /> Job completed?</label>
             <Field label="Job Completed Date"><input style={styles.input} type="date" value={job.jobCompletedDate} onChange={(e) => update("jobCompletedDate", e.target.value)} /></Field>
@@ -985,7 +1236,7 @@ function CleanerModal({ cleaner, setCleaner, onSave, onClose }) {
         <div style={styles.modalHeader}>
           <div>
             <h2 style={styles.modalTitle}>Cleaner Partner</h2>
-            <p style={styles.modalSubtitle}>Store cleaner details, insurance proof, contractor terms and payout agreement.</p>
+            <p style={styles.modalSubtitle}>Store cleaner location, coverage, services, insurance proof, contractor terms and payout agreement.</p>
           </div>
           <button style={styles.secondaryButton} onClick={onClose}>Close</button>
         </div>
@@ -995,15 +1246,31 @@ function CleanerModal({ cleaner, setCleaner, onSave, onClose }) {
         </div>
         {expired && <div style={styles.warningBox}>⚠️ Insurance expiry date has passed. Ask for updated proof before assigning jobs.</div>}
 
-        <FormSection title="Cleaner Details">
+        <FormSection title="Cleaner Details & Location">
           <div style={styles.formGrid}>
             <Field label="Cleaner / Full Name"><input style={styles.input} value={cleaner.name} onChange={(e) => update("name", e.target.value)} /></Field>
             <Field label="Phone"><input style={styles.input} value={cleaner.phone} onChange={(e) => update("phone", e.target.value)} /></Field>
             <Field label="Email"><input style={styles.input} value={cleaner.email} onChange={(e) => update("email", e.target.value)} /></Field>
+            <Field label="Base Area"><Select value={cleaner.baseArea} options={areas} onChange={(v) => update("baseArea", v)} /></Field>
+            <Field label="Base Postcode"><input style={styles.input} placeholder="Example: WS1, B21, B44" value={cleaner.basePostcode} onChange={(e) => update("basePostcode", e.target.value)} /></Field>
             <Field label="Reliability Score"><Select value={cleaner.reliabilityScore} options={["New", "Good", "Excellent", "Warning", "Do Not Use"]} onChange={(v) => update("reliabilityScore", v)} /></Field>
           </div>
-          <Field label="Areas Covered"><textarea style={styles.textarea} value={cleaner.areasCovered} onChange={(e) => update("areasCovered", e.target.value)} /></Field>
-          <Field label="Services Offered"><textarea style={styles.textarea} value={cleaner.servicesOffered} onChange={(e) => update("servicesOffered", e.target.value)} /></Field>
+          <Field label="Areas Covered">
+            <textarea
+              style={styles.textarea}
+              value={cleaner.areasCovered}
+              onChange={(e) => update("areasCovered", e.target.value)}
+              placeholder="Example: Walsall, Great Barr, Sutton Coldfield, Birmingham, WS1, WS2, B21"
+            />
+          </Field>
+          <Field label="Services Offered">
+            <textarea
+              style={styles.textarea}
+              value={cleaner.servicesOffered}
+              onChange={(e) => update("servicesOffered", e.target.value)}
+              placeholder="Example: regular domestic cleaning, deep cleaning, end-of-tenancy, Airbnb changeovers"
+            />
+          </Field>
           <Field label="Usual Prices / Hourly Rate"><textarea style={styles.textarea} value={cleaner.usualPrices} onChange={(e) => update("usualPrices", e.target.value)} /></Field>
           <Field label="Availability"><textarea style={styles.textarea} value={cleaner.availability} onChange={(e) => update("availability", e.target.value)} /></Field>
         </FormSection>
@@ -1128,6 +1395,7 @@ const styles = {
   outlineBadge: { border: "1px solid #cbd5e1", color: "#334155", padding: "6px 10px", borderRadius: "999px", fontSize: "12px", fontWeight: "800", background: "white" },
   warningBox: { marginTop: "12px", background: "#fef3c7", color: "#92400e", border: "1px solid #fde68a", padding: "12px", borderRadius: "14px", fontSize: "14px", fontWeight: "700" },
   successBox: { marginTop: "12px", background: "#dcfce7", color: "#166534", border: "1px solid #bbf7d0", padding: "12px", borderRadius: "14px", fontSize: "14px", fontWeight: "700" },
+  matchMiniBox: { marginTop: "12px", background: "#eef2ff", color: "#3730a3", border: "1px solid #c7d2fe", padding: "12px", borderRadius: "14px", fontSize: "14px", fontWeight: "700" },
   cleanerGrid: { maxWidth: "1200px", margin: "0 auto", display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(280px, 1fr))", gap: "14px" },
   cleanerCard: { background: "white", border: "1px solid #e2e8f0", borderRadius: "18px", padding: "18px", boxShadow: "0 1px 4px rgba(15, 23, 42, 0.06)" },
   cleanerTop: { display: "flex", justifyContent: "space-between", gap: "12px", marginBottom: "12px", flexWrap: "wrap" },
@@ -1154,4 +1422,10 @@ const styles = {
   fieldLabel: { fontSize: "13px", fontWeight: "800", color: "#334155" },
   checkboxLabel: { display: "flex", gap: "8px", alignItems: "center", border: "1px solid #cbd5e1", borderRadius: "12px", padding: "11px 12px", fontSize: "14px", fontWeight: "700", background: "white" },
   checkboxGrid: { display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))", gap: "12px", marginTop: "12px" },
+  matchList: { display: "grid", gap: "12px" },
+  matchCard: { border: "1px solid #e2e8f0", borderRadius: "16px", padding: "14px", background: "#f8fafc" },
+  bestMatchCard: { border: "2px solid #2563eb", borderRadius: "16px", padding: "14px", background: "#eff6ff" },
+  matchHeader: { display: "flex", justifyContent: "space-between", gap: "12px", alignItems: "flex-start", flexWrap: "wrap" },
+  matchTitle: { margin: 0, fontSize: "16px", fontWeight: "900" },
+  reasonList: { display: "flex", gap: "8px", flexWrap: "wrap", marginTop: "10px" },
 };
